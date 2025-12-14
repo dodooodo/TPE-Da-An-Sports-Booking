@@ -3,7 +3,7 @@ import time
 import sys
 from pathlib import Path
 from DrissionPage import ChromiumPage, ChromiumOptions
-from DrissionPage.errors import ElementNotFoundError
+from DrissionPage.common import Keys  # 引入按鍵常數
 
 # --- 設定區 ---
 LOGIN_URL = "https://www.cjcf.com.tw/CG02.aspx?module=login_page&files=login"
@@ -14,91 +14,75 @@ USERNAME = os.getenv("BOOKING_USERNAME", "")
 PASSWORD = os.getenv("BOOKING_PASSWORD", "")
 
 def log(msg):
-    """即時輸出 Log，並包含時間戳記"""
+    """即時輸出 Log"""
     print(f"[{time.strftime('%H:%M:%S')}] {msg}")
-    sys.stdout.flush() # 強制刷新緩衝區，確保 GitHub Actions 能即時看到
+    sys.stdout.flush()
 
 def run():
-    log("🚀 腳本開始執行")
+    log("🚀 腳本開始執行 (Enter 鍵連發版)")
     
-    # 1. 設定瀏覽器選項
     co = ChromiumOptions()
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-gpu')
-    co.set_argument('--disable-dev-shm-usage') # 避免記憶體不足崩潰
-    co.set_browser_path('/usr/bin/google-chrome') # 明確指定路徑
-
-    # 設定連線逾時，避免卡在啟動
-    co.set_timeouts(base=10, page_load=30)
+    co.set_browser_path('/usr/bin/google-chrome')
+    co.set_timeouts(base=15, page_load=30)
 
     try:
-        log("1. 正在啟動 DrissionPage (Chrome)...")
+        log("1. 啟動瀏覽器...")
         page = ChromiumPage(co)
-        log("✅ 瀏覽器啟動成功")
-    except Exception as e:
-        log(f"❌ 瀏覽器啟動失敗: {e}")
-        return
-
-    try:
+        
         log(f"2. 前往網址: {LOGIN_URL}")
-        # retry=1, interval=1 代表失敗只重試一次
-        page.get(LOGIN_URL, retry=1, interval=1, timeout=20)
-        log("✅ 頁面載入完成 (或已達逾時)")
+        page.get(LOGIN_URL, retry=1, timeout=20)
         
-        # 立即截圖
+        log("⏳ 等待文件載入...")
+        page.wait.doc_loaded(timeout=10, raise_err=False)
         page.get_screenshot(str(ART_DIR / "01_loaded.png"))
-        log("📸 已截圖 01_loaded.png")
 
-        # 3. 檢查目前頁面標題與 URL，判斷狀況
-        log(f"ℹ️ 目前 URL: {page.url}")
-        log(f"ℹ️ 目前 Title: {page.title}")
-
-        # 4. 偵測 Cloudflare
-        log("3. 檢查是否有 Cloudflare 驗證...")
-        # 檢查常見 CF 特徵
-        if "Just a moment" in page.title or page.ele("xpath://iframe[contains(@src, 'cloudflare')]", timeout=2):
-            log("⚠️ 偵測到 Cloudflare 阻擋畫面！")
-            page.get_screenshot(str(ART_DIR / "98_cloudflare_detected.png"))
-            
-            # 嘗試簡單繞過 (等待)
-            log("⏳ 等待 5 秒...")
-            time.sleep(5)
-            
-            # 再次檢查
-            if "Just a moment" in page.title:
-                log("❌ Cloudflare 驗證未通過，程式將終止")
-                # 這裡不報錯，讓它正常結束以便我們看 Artifacts
-                return 
-
-        # 5. 尋找登入框
-        log("4. 尋找登入輸入框...")
+        # --- [核心修正] 迴圈按 Enter 消除彈窗 ---
+        log("3. 處理彈窗 (嘗試按 Enter)...")
         
-        # 使用極短 timeout (5秒)，找不到就報錯，不要空等
+        # 設定最多嘗試 5 次 (即使你說 1-3 次，多設一點比較保險)
+        popup_cleared = False
+        for i in range(5):
+            # 每次按之前，先檢查登入框是否已經出現且可見
+            # 如果已經可以輸入，代表彈窗沒了，直接跳出迴圈
+            ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=1)
+            if ele_user and ele_user.is_displayed():
+                log(f"✅ 在第 {i} 次檢查時發現登入框，停止按 Enter。")
+                popup_cleared = True
+                break
+            
+            log(f"👉 第 {i+1} 次嘗試按 Enter...")
+            
+            # 模擬按下 Enter 鍵
+            page.actions.type(Keys.ENTER)
+            
+            # 等待一下讓彈窗動畫消失
+            time.sleep(1.5)
+            
+            # 截圖紀錄過程 (可選)
+            if i == 0:
+                page.get_screenshot(str(ART_DIR / "01-1_after_first_enter.png"))
+        
+        # 如果跑完迴圈還沒標記成功，再最後確認一次
+        if not popup_cleared:
+            log("⚠️ 迴圈結束，將嘗試直接尋找登入框...")
+        # -------------------------------------
+
+        log("4. 尋找登入輸入框...")
         ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=5)
         
-        if not ele_user:
-            log("❌ 找不到使用者名稱輸入框！可能還在 Cloudflare 畫面或版面已變更")
+        if not ele_user or not ele_user.is_displayed():
+            log("❌ 仍然找不到可互動的登入框！可能 Enter 沒效或彈窗太多。")
             page.get_screenshot(str(ART_DIR / "99_not_found.png"))
-            log("📸 已截圖 99_not_found.png")
-            
-            # 嘗試印出頁面原始碼的前 500 字，幫忙除錯
-            print("--- Page Source Head ---")
-            print(page.html[:500])
-            print("------------------------")
             return
 
-        log("✅ 找到輸入框，開始輸入...")
+        log("✅ 找到輸入框，開始輸入帳密...")
         ele_pass = page.ele('css:input#loginpw')
         ele_btn = page.ele('css:input#login_but')
 
-        # 處理可能的彈窗 (Swal)
-        swal = page.ele('css:button.swal2-confirm', timeout=2)
-        if swal:
-            log("👉 發現彈窗，點擊確認")
-            swal.click()
-            time.sleep(1)
-
         ele_user.input(USERNAME)
+        time.sleep(0.2)
         ele_pass.input(PASSWORD)
         log("✅ 帳密已填寫")
         page.get_screenshot(str(ART_DIR / "02_filled.png"))
@@ -106,22 +90,20 @@ def run():
         log("5. 點擊登入按鈕...")
         ele_btn.click()
         
-        log("⏳ 等待跳轉 (5秒)...")
-        time.sleep(5)
+        log("⏳ 等待跳轉...")
+        page.wait.doc_loaded(timeout=15, raise_err=False)
+        
         page.get_screenshot(str(ART_DIR / "03_result.png"))
         log(f"ℹ️ 登入後 URL: {page.url}")
 
-        if "login" not in page.url:
+        if "login" not in page.url or page.ele('text:登出'):
             log("🎉 登入成功！")
         else:
-            log("❓ 似乎還在登入頁，請檢查截圖 03_result.png")
+            log("❓ 登入狀態未明，請檢查 03_result.png")
 
     except Exception as e:
-        log(f"🔥 發生未預期的錯誤: {e}")
-        try:
-            page.get_screenshot(str(ART_DIR / "crash_dump.png"))
-        except:
-            pass
+        log(f"🔥 發生錯誤: {e}")
+        page.get_screenshot(str(ART_DIR / "crash_dump.png"))
         raise
     finally:
         log("🛑 關閉瀏覽器")
