@@ -25,18 +25,18 @@ def safe_screenshot(page, filename):
     """
     try:
         page.get_screenshot(str(ART_DIR / filename))
-    except AlertExistsError:
-        log("⚠️ 截圖時遇到原生 Alert，嘗試強制處理...")
+    except Exception as e:
+        # 如果因為 Alert 導致截圖失敗，嘗試處理後再截
         try:
-            # 直接呼叫處理方法，不檢查屬性
+            log(f"⚠️ 截圖失敗 (可能是 Alert 阻擋)，嘗試略過: {e}")
             page.handle_alert(accept=True)
             time.sleep(1)
             page.get_screenshot(str(ART_DIR / filename))
-        except Exception as e:
-            log(f"❌ 處理 Alert 後截圖仍失敗: {e}")
+        except:
+            pass
 
 def run():
-    log("🚀 腳本開始執行 (Final Fix)")
+    log("🚀 腳本開始執行 (Syntax Fixed)")
     
     co = ChromiumOptions()
     co.set_argument('--no-sandbox')
@@ -49,7 +49,6 @@ def run():
         page = ChromiumPage(co)
         
         # [關鍵] 設定全自動處理原生彈窗
-        # 只要有 Alert 跳出，自動按確定，無需手動介入
         page.set.auto_handle_alert(accept=True)
         log("✅ 已啟用自動 Alert 處理")
 
@@ -61,13 +60,16 @@ def run():
         safe_screenshot(page, "01_loaded.png")
 
         log("3. 處理 HTML 遮罩 (Enter Loop)...")
-        # 這裡只需要專注處理 "非原生" 的 HTML 遮罩 (因為原生的已經被上面 auto_handle 解決了)
+        
         for i in range(5):
             # 檢查登入框是否可見
             ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=1)
-            if ele_user and ele_user.is_displayed():
+            
+            # --- [修正點 1] 使用 .states.is_displayed (屬性) ---
+            if ele_user and ele_user.states.is_displayed:
                 log(f"✅ 在第 {i} 次檢查時發現登入框，準備登入。")
                 break
+            # -----------------------------------------------
             
             log(f"👉 第 {i+1} 次嘗試按 Enter (消除 HTML 遮罩)...")
             page.actions.type(Keys.ENTER)
@@ -79,10 +81,12 @@ def run():
         log("4. 尋找登入輸入框...")
         ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=5)
         
-        if not ele_user or not ele_user.is_displayed():
+        # --- [修正點 2] 使用 .states.is_displayed (屬性) ---
+        if not ele_user or not ele_user.states.is_displayed:
             log("❌ 找不到可互動的登入框！")
             safe_screenshot(page, "99_not_found.png")
             return
+        # -----------------------------------------------
 
         log("✅ 找到輸入框，開始輸入帳密...")
         ele_pass = page.ele('css:input#loginpw')
@@ -110,7 +114,6 @@ def run():
 
     except Exception as e:
         log(f"🔥 發生錯誤: {e}")
-        # 錯誤處理區塊也不要檢查 page.alert.exists，直接嘗試 handle
         try:
             page.handle_alert(accept=True)
             page.get_screenshot(str(ART_DIR / "crash_dump.png"))
