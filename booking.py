@@ -128,7 +128,7 @@ def run():
 
         try:
             print(f"前往: {LOGIN_URL}")
-            page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
             save_screenshot(page, "01_loaded.png")
 
             # 1. 處理彈窗
