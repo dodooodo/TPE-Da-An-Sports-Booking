@@ -20,15 +20,12 @@ def log(msg):
     sys.stdout.flush()
 
 def safe_screenshot(page, filename):
-    """
-    安全的截圖函式
-    """
+    """安全的截圖函式"""
     try:
         page.get_screenshot(str(ART_DIR / filename))
     except Exception as e:
-        # 如果因為 Alert 導致截圖失敗，嘗試處理後再截
         try:
-            log(f"⚠️ 截圖失敗 (可能是 Alert 阻擋)，嘗試略過: {e}")
+            log(f"⚠️ 截圖失敗，嘗試略過: {e}")
             page.handle_alert(accept=True)
             time.sleep(1)
             page.get_screenshot(str(ART_DIR / filename))
@@ -36,7 +33,7 @@ def safe_screenshot(page, filename):
             pass
 
 def run():
-    log("🚀 腳本開始執行 (Syntax Fixed)")
+    log("🚀 腳本開始執行 (Added swal2-confirm click)")
     
     co = ChromiumOptions()
     co.set_argument('--no-sandbox')
@@ -48,7 +45,7 @@ def run():
         log("1. 啟動瀏覽器...")
         page = ChromiumPage(co)
         
-        # [關鍵] 設定全自動處理原生彈窗
+        # 1. 全自動處理原生彈窗 (Native Alert)
         page.set.auto_handle_alert(accept=True)
         log("✅ 已啟用自動 Alert 處理")
 
@@ -59,34 +56,44 @@ def run():
         page.wait.doc_loaded(timeout=15, raise_err=False)
         safe_screenshot(page, "01_loaded.png")
 
-        log("3. 處理 HTML 遮罩 (Enter Loop)...")
-        
-        for i in range(5):
-            # 檢查登入框是否可見
+        # 2. 處理 HTML 遮罩 (Enter Loop)
+        log("3. 嘗試消除通用遮罩 (Enter Loop)...")
+        for i in range(3): # 減少次數，因為重點在後面的按鈕
             ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=1)
-            
-            # --- [修正點 1] 使用 .states.is_displayed (屬性) ---
             if ele_user and ele_user.states.is_displayed:
-                log(f"✅ 在第 {i} 次檢查時發現登入框，準備登入。")
+                log(f"✅ 發現登入框，跳過 Enter 迴圈。")
                 break
-            # -----------------------------------------------
             
-            log(f"👉 第 {i+1} 次嘗試按 Enter (消除 HTML 遮罩)...")
             page.actions.type(Keys.ENTER)
-            time.sleep(1.5)
-            
-            if i == 0:
-                safe_screenshot(page, "01-1_after_enter.png")
+            time.sleep(0.5)
 
-        log("4. 尋找登入輸入框...")
+        # --- [新功能] 處理 SweetAlert2 確認按鈕 ---
+        log("4. 檢查並點擊 swal2-confirm 按鈕...")
+        try:
+            # 設定 timeout=3，如果在 3 秒內出現就點，沒出現就跳過
+            btn_confirm = page.ele('css:button.swal2-confirm', timeout=3)
+            
+            if btn_confirm and btn_confirm.states.is_displayed:
+                log("👉 發現 swal2-confirm 按鈕，執行點擊！")
+                safe_screenshot(page, "01-2_before_swal_click.png")
+                
+                btn_confirm.click()
+                
+                log("⏳ 點擊後等待 2 秒...")
+                time.sleep(2)
+            else:
+                log("ℹ️ 未發現 swal2-confirm 按鈕，繼續執行。")
+        except Exception as e:
+            log(f"⚠️ 檢查按鈕時發生輕微異常 (可忽略): {e}")
+        # ----------------------------------------
+
+        log("5. 尋找登入輸入框...")
         ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=5)
         
-        # --- [修正點 2] 使用 .states.is_displayed (屬性) ---
         if not ele_user or not ele_user.states.is_displayed:
             log("❌ 找不到可互動的登入框！")
             safe_screenshot(page, "99_not_found.png")
             return
-        # -----------------------------------------------
 
         log("✅ 找到輸入框，開始輸入帳密...")
         ele_pass = page.ele('css:input#loginpw')
@@ -98,7 +105,7 @@ def run():
         log("✅ 帳密已填寫")
         safe_screenshot(page, "02_filled.png")
 
-        log("5. 點擊登入按鈕...")
+        log("6. 點擊登入按鈕...")
         ele_btn.click()
         
         log("⏳ 等待跳轉...")
