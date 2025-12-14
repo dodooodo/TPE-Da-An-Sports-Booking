@@ -1,10 +1,10 @@
 import os
 import time
 import sys
+import random
 from pathlib import Path
 from DrissionPage import ChromiumPage, ChromiumOptions
 from DrissionPage.common import Keys
-from DrissionPage.errors import AlertExistsError
 
 # --- 設定區 ---
 LOGIN_URL = "https://www.cjcf.com.tw/CG02.aspx?module=login_page&files=login"
@@ -15,143 +15,107 @@ USERNAME = os.getenv("BOOKING_USERNAME", "")
 PASSWORD = os.getenv("BOOKING_PASSWORD", "")
 
 def log(msg):
-    """即時輸出 Log"""
     print(f"[{time.strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-def safe_screenshot(page, filename):
-    """安全的截圖函式"""
-    try:
-        page.get_screenshot(str(ART_DIR / filename))
-    except Exception as e:
-        try:
-            # 截圖失敗通常是因為有 Alert，嘗試點掉
-            page.handle_alert(accept=True)
-            time.sleep(0.5)
-            page.get_screenshot(str(ART_DIR / filename))
-        except:
-            pass
+# [新增] 擬人化隨機延遲
+def human_delay(min_s=0.5, max_s=1.5):
+    """
+    模擬人類思考或手部移動的延遲
+    """
+    delay = random.uniform(min_s, max_s)
+    time.sleep(delay)
 
 def run():
-    log("🚀 腳本開始執行 (Strict Check Mode)")
+    log("🚀 腳本開始執行 (Humanized Version)")
     
     co = ChromiumOptions()
+    # [建議] 如果是在本地跑，盡量不要用無頭模式 (Headless)，有頭模式特徵最真實
+    # co.headless(False) 
+    
+    # 讓 DrissionPage 自動管理 UserAgent，使其與 Chrome 版本匹配
+    co.auto_port() 
+    
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-gpu')
-    co.set_browser_path('/usr/bin/google-chrome')
     co.set_timeouts(base=10, page_load=60)
 
     try:
-        log("1. 啟動瀏覽器...")
         page = ChromiumPage(co)
         page.set.auto_handle_alert(accept=True)
         
-        log(f"2. 前往網址: {LOGIN_URL}")
+        log(f"前往: {LOGIN_URL}")
         page.get(LOGIN_URL, retry=1, timeout=30)
         page.wait.doc_loaded(timeout=15, raise_err=False)
-        safe_screenshot(page, "01_loaded.png")
-
-        # 3. 處理 HTML 遮罩 & Swal
-        log("3. 處理遮罩與彈窗...")
         
-        # 3-1. 先檢查 swal2 (優先點擊)
+        # [擬人化] 載入後不會馬上動作，人類會先看一眼
+        human_delay(1.0, 2.0)
+
+        # 處理遮罩
+        log("處理遮罩...")
         try:
-            btn_confirm = page.ele('css:button.swal2-confirm', timeout=2)
-            if btn_confirm and btn_confirm.states.is_displayed:
-                log("👉 發現 swal2-confirm，點擊！")
-                btn_confirm.click()
-                time.sleep(1)
+            # 優先嘗試點擊 swal
+            btn = page.ele('css:button.swal2-confirm', timeout=1)
+            if btn and btn.states.is_displayed:
+                human_delay(0.3, 0.8) # 看到按鈕 -> 移動滑鼠 -> 點擊
+                btn.click()
         except:
             pass
 
-        # 3-2. 再檢查登入框，若被擋住則按 Enter
-        for i in range(3):
+        # 備用：按 Enter
+        for _ in range(3):
             ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=1)
-            # 使用 states.is_displayed 確保是真的看得到
             if ele_user and ele_user.states.is_displayed:
-                log(f"✅ 登入框已顯示，準備輸入。")
                 break
             page.actions.type(Keys.ENTER)
-            time.sleep(0.5)
+            human_delay(0.2, 0.5)
 
-        log("4. 輸入帳密...")
+        # 輸入帳密
+        log("輸入帳密...")
         ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=5)
-        if not ele_user or not ele_user.states.is_displayed:
-            log("❌ 找不到可互動的登入框！")
-            safe_screenshot(page, "99_not_found.png")
+        if not ele_user:
+            log("❌ 找不到登入框")
             return
 
-        ele_pass = page.ele('css:input#loginpw')
-        ele_btn = page.ele('css:input#login_but')
-
+        # [擬人化] 輸入速度隨機化
+        # DrissionPage 預設輸入很快，我們可以拆開來輸入，或至少在兩個欄位間加延遲
+        ele_user.click() # 先點一下 focus
+        human_delay(0.2, 0.5)
         ele_user.input(USERNAME)
-        time.sleep(0.2)
-        ele_pass.input(PASSWORD)
-        log("✅ 帳密已填寫")
-        safe_screenshot(page, "02_filled.png")
-
-        log("5. 執行登入 (使用 JS 強制點擊)...")
-        # 改用 by_js=True，這通常能穿透上方可能的透明遮罩
-        ele_btn.click(by_js=True)
         
-        log("⏳ 正在等待 URL 改變 (最多 10 秒)...")
-        # 手動輪詢 URL 變化，比 wait.doc_loaded 更準確
-        login_success = False
-        for _ in range(10):
+        human_delay(0.5, 1.2) # 輸入完帳號，切換到密碼欄位的時間
+        
+        ele_pass = page.ele('css:input#loginpw')
+        ele_pass.click()
+        ele_pass.input(PASSWORD)
+        
+        human_delay(0.5, 1.0) # 輸入完密碼，準備點登入
+
+        # 執行登入
+        log("點擊登入...")
+        ele_btn = page.ele('css:input#login_but')
+        
+        # [高級防禦] 有時候 CF 會偵測滑鼠是否真的懸停在按鈕上
+        # page.actions.move_to(ele_btn) # 移動滑鼠到按鈕
+        # human_delay(0.2, 0.4)
+        
+        ele_btn.click() # 這裡不需要 by_js=True，用模擬點擊更像真人
+        
+        # 等待結果
+        log("等待跳轉...")
+        # 這裡用較長的輪詢檢查
+        for _ in range(15):
             time.sleep(1)
-            current_url = page.url
-            if LOGIN_URL not in current_url and "login" not in current_url:
-                login_success = True
+            if LOGIN_URL not in page.url and "login" not in page.url:
+                log("🎉 登入成功！")
                 break
-            
-            # 有時候只是參數變了，但還是在 login頁面
-            if "files=login" not in current_url: 
-                # 如果 URL 變短了或變成長的 session ID，也算成功
-                pass 
-
-        safe_screenshot(page, "03_result.png")
-        log(f"ℹ️ 最終 URL: {page.url}")
-
-        # 6. 結果判定與診斷
-        if page.url != LOGIN_URL and "login_page" not in page.url:
-             log("🎉 登入成功！(URL 已變更)")
         else:
-            log("❌ 登入失敗：URL 未變更。")
-            
-            # --- [診斷區] 為什麼失敗？ ---
-            log("🔎 開始診斷失敗原因 (掃描頁面文字)...")
-            
-            # 1. 檢查是否有驗證碼圖片
-            if page.ele('css:img#ContentPlaceHolder1_CaptchaImage'):
-                log("⚠️ 嚴重警告：偵測到「圖形驗證碼」！")
-                log("👉 您的帳號可能被鎖定，或該網站強制要求輸入驗證碼。")
-                log("👉 解決方案：需要串接 OCR (ddddocr) 才能破解。")
-
-            # 2. 檢查常見錯誤訊息
-            body_text = page.ele('tag:body').text
-            error_keywords = ["密碼錯誤", "無此帳號", "驗證碼", "錯誤", "必須", "Invalid"]
-            found_errors = [k for k in error_keywords if k in body_text]
-            
-            if found_errors:
-                log(f"⚠️ 偵測到錯誤關鍵字: {found_errors}")
-            else:
-                log("❓ 未發現明顯錯誤文字，請檢查截圖 03_result.png 看是否有彈窗警告。")
-            
-            # 印出部分 HTML 幫助 Debug
-            print("-" * 20)
-            print("Page Title:", page.title)
-            print("-" * 20)
+            log("⚠️ URL 未變更，可能需要檢查截圖")
+            page.get_screenshot(str(ART_DIR / "debug_result.png"))
 
     except Exception as e:
-        log(f"🔥 發生錯誤: {e}")
-        try:
-            page.handle_alert(accept=True)
-            page.get_screenshot(str(ART_DIR / "crash_dump.png"))
-        except:
-            pass
-        raise
+        log(f"🔥 Error: {e}")
     finally:
-        log("🛑 關閉瀏覽器")
         page.quit()
 
 if __name__ == "__main__":
