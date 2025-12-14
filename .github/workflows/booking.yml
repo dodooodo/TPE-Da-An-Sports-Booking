@@ -1,8 +1,8 @@
-name: Weekly Booking Bot (Xvfb + Stealth)
+name: Weekly Booking Bot (DrissionPage)
 
 on:
   schedule:
-    - cron: "0 1 * * 5"   # Fri 01:00 UTC = 09:00 Asia/Taipei
+    - cron: "0 1 * * 5"
   workflow_dispatch: {}
 
 jobs:
@@ -20,35 +20,26 @@ jobs:
           python-version: "3.11"
           cache: 'pip'
 
-      # 新增：安裝 Xvfb (虛擬螢幕環境)
-      - name: Install System Dependencies (Xvfb)
+      # 步驟 A: 安裝 Xvfb 和 Google Chrome
+      - name: Install Chrome & Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb
+          sudo apt-get install -y xvfb wget
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
-      - name: Ensure Playwright Browsers are cached
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
-
-      - name: Install Playwright Browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: python -m playwright install --with-deps chromium
-
-      - name: Run booking script with Xvfb
+      - name: Run booking script
         env:
           BOOKING_USERNAME: ${{ secrets.BOOKING_USERNAME }}
           BOOKING_PASSWORD: ${{ secrets.BOOKING_PASSWORD }}
-          CF_WAIT_SECONDS: "10" # 稍微加長等待時間給 Cloudflare
-          TZ: "Asia/Taipei"
+          CF_WAIT_SECONDS: "10"
         run: |
-          # 使用 xvfb-run 啟動虛擬螢幕，解析度設為 1920x1080
+          # 同樣使用 Xvfb 模擬螢幕
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python booking.py
 
       - name: Upload artifacts
@@ -58,4 +49,3 @@ jobs:
           name: debug-artifacts
           path: artifacts/**
           if-no-files-found: ignore
-          retention-days: 3
