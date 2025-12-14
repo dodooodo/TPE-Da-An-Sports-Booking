@@ -1,4 +1,4 @@
-name: Weekly Booking Bot (Playwright)
+name: Weekly Booking Bot (Xvfb + Stealth)
 
 on:
   schedule:
@@ -18,7 +18,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: 'pip' # 啟用 pip 快取
+          cache: 'pip'
+
+      # 新增：安裝 Xvfb (虛擬螢幕環境)
+      - name: Install System Dependencies (Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
 
       - name: Install dependencies
         run: |
@@ -32,25 +38,24 @@ jobs:
           key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
 
       - name: Install Playwright Browsers
-        # 只有在沒有快取時才執行安裝，大幅節省時間
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: python -m playwright install --with-deps chromium
 
-      - name: Run booking script
+      - name: Run booking script with Xvfb
         env:
           BOOKING_USERNAME: ${{ secrets.BOOKING_USERNAME }}
           BOOKING_PASSWORD: ${{ secrets.BOOKING_PASSWORD }}
-          CF_WAIT_SECONDS: "6"
-          TZ: "Asia/Taipei" # 設定時區，讓 log 時間正確
+          CF_WAIT_SECONDS: "10" # 稍微加長等待時間給 Cloudflare
+          TZ: "Asia/Taipei"
         run: |
-          python booking.py
+          # 使用 xvfb-run 啟動虛擬螢幕，解析度設為 1920x1080
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python booking.py
 
-      - name: Upload artifacts (debug)
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-artifacts
-          path: |
-            artifacts/**
+          path: artifacts/**
           if-no-files-found: ignore
-          retention-days: 3 # 設定保留天數，節省空間
+          retention-days: 3
