@@ -1,141 +1,187 @@
 import os
 import time
 from pathlib import Path
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
+from playwright.sync_api import sync_playwright, Page, BrowserContext
 
+# --- 設定區 ---
 LOGIN_URL = "https://www.cjcf.com.tw/CG02.aspx?module=login_page&files=login"
 
-# 你提供的 selectors
+# Selectors
 SEL_SWAL_CONFIRM = "button.swal2-confirm"
 SEL_USERNAME = "input#ContentPlaceHolder1_loginid"
 SEL_PASSWORD = "input#loginpw"
 SEL_LOGIN_BTN = "input#login_but"
+# 假設登入成功後會有登出按鈕，或者 URL 會改變，這裡預留一個檢查點
+SEL_LOGOUT_BTN = "a:has-text('登出')" 
 
 ART_DIR = Path("artifacts")
 ART_DIR.mkdir(parents=True, exist_ok=True)
 
 USERNAME = os.getenv("BOOKING_USERNAME", "")
 PASSWORD = os.getenv("BOOKING_PASSWORD", "")
-
 CF_WAIT_SECONDS = int(os.getenv("CF_WAIT_SECONDS", "6"))
 
-def save_screenshot(page, name: str) -> str:
-    path = ART_DIR / name
-    page.screenshot(path=str(path), full_page=True)
-    return str(path)
+# 真人 User-Agent (Chrome 120 on Windows)
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-def try_swallow_popups(page, enter_times: int = 6) -> int:
+def save_screenshot(page: Page, name: str) -> str:
+    """輔助函式：存截圖並回傳路徑"""
+    try:
+        path = ART_DIR / name
+        page.screenshot(path=str(path), full_page=True)
+        return str(path)
+    except Exception as e:
+        print(f"截圖失敗 {name}: {e}")
+        return ""
+
+def handle_popups(page: Page):
     """
-    你說有數個彈跳視窗需要 press Enter 數次 + 有 swal2-confirm 需要點。
-    這裡做：
-    - 每輪：先嘗試點 swal2-confirm（若存在且可見）→ 再按 Enter
+    處理 SweetAlert2 彈窗與可能的全站公告。
+    邏輯：
+    1. 快速檢查是否有 swal2 按鈕，有就點。
+    2. 如果輸入框還沒出現 (被遮擋)，嘗試按 Enter 關閉可能的原生層。
     """
-    pressed = 0
-    for _ in range(enter_times):
-        # 點 swal2-confirm（如果有）
+    print("檢查彈跳視窗...")
+    
+    # 嘗試最多 3 輪，每輪間隔稍短
+    for i in range(3):
         try:
-            btn = page.locator(SEL_SWAL_CONFIRM)
-            if btn.count() > 0 and btn.first.is_visible():
-                btn.first.click(timeout=700)
-        except Exception:
-            pass
+            # 1. 優先處理 SweetAlert
+            swal_btn = page.locator(SEL_SWAL_CONFIRM).first
+            if swal_btn.is_visible(timeout=1000):
+                print(f"[{i}] 發現 SweetAlert，點擊確認...")
+                swal_btn.click()
+                page.wait_for_timeout(500) # 等待動畫消失
+                continue
+            
+            # 2. 如果登入框還不可見，嘗試按 Enter (盲解其他遮罩)
+            if not page.locator(SEL_USERNAME).is_visible():
+                print(f"[{i}] 登入框被遮擋，嘗試按 Enter...")
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(500)
+            else:
+                # 登入框可見，應該沒有彈窗了
+                print("登入框已可見，停止處理彈窗。")
+                break
+                
+        except Exception as e:
+            print(f"處理彈窗時發生輕微異常 (可忽略): {e}")
 
-        # 按 Enter
-        try:
-            page.keyboard.press("Enter")
-            pressed += 1
-            page.wait_for_timeout(350)
-        except Exception:
-            break
-    return pressed
-
-def note_cloudflare_and_wait(page) -> str:
+def check_cloudflare(page: Page):
     """
-    Cloudflare 驗證：
-    - 我們不做繞過/破解
-    - 先等待幾秒（你說需要等）
-    - 嘗試偵測是否有明顯 challenge iframe（僅偵測、做註記）
-    - 截圖留存
+    檢查是否有明顯的 Cloudflare 阻擋
     """
-    page.wait_for_timeout(CF_WAIT_SECONDS * 1000)
-
-    candidates = [
+    print("檢查 Cloudflare 狀態...")
+    # 稍微等待讓 JS 執行
+    page.wait_for_timeout(2000) 
+    
+    # 檢查常見的 Challenge 特徵
+    cf_selectors = [
         "iframe[src*='challenges.cloudflare.com']",
-        "iframe[src*='turnstile']",
-        "div.cf-turnstile",
-        "iframe[title*='Cloudflare']",
+        "#cf-challenge-running",
+        "div.cf-turnstile"
     ]
-
-    found = []
-    for sel in candidates:
-        try:
-            if page.locator(sel).count() > 0:
-                found.append(sel)
-        except Exception:
-            pass
-
-    save_screenshot(page, "after_cf_wait.png")
-
+    
+    found = False
+    for sel in cf_selectors:
+        if page.locator(sel).count() > 0:
+            print(f"⚠️ 偵測到 Cloudflare 元件: {sel}")
+            found = True
+            break
+            
+    save_screenshot(page, "check_cloudflare.png")
+    
     if found:
-        return (
-            "Cloudflare 可能存在驗證元件（僅偵測）："
-            + ", ".join(found)
-            + f"；已等待 {CF_WAIT_SECONDS}s 並截圖 after_cf_wait.png。"
-        )
-    return f"Cloudflare 未偵測到明顯驗證元件；已等待 {CF_WAIT_SECONDS}s 並截圖 after_cf_wait.png。"
+        print(f"等待 {CF_WAIT_SECONDS} 秒讓 Cloudflare 驗證通過...")
+        page.wait_for_timeout(CF_WAIT_SECONDS * 1000)
+    else:
+        print("未偵測到明顯阻擋，繼續執行。")
 
-def main():
+def run():
     if not USERNAME or not PASSWORD:
-        raise RuntimeError("缺少 BOOKING_USERNAME 或 BOOKING_PASSWORD（請在 GitHub Secrets 設定）")
+        raise RuntimeError("缺少 BOOKING_USERNAME 或 BOOKING_PASSWORD")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-
-        # 可視情況調整 user agent / viewport（先保持簡單）
-        context = browser.new_context(viewport={"width": 1280, "height": 720})
+        # --- 啟動瀏覽器 (加入 Stealth 參數) ---
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled", # 重要：隱藏自動化特徵
+                "--no-sandbox",
+                "--disable-infobars",
+                "--disable-setuid-sandbox"
+            ]
+        )
+        
+        # 設定 Context (視窗大小與 User-Agent)
+        context = browser.new_context(
+            viewport={"width": 1366, "height": 768},
+            user_agent=USER_AGENT,
+            locale="zh-TW",
+            timezone_id="Asia/Taipei"
+        )
+        
+        # 開啟 Trace (除錯神器)
+        context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        
         page = context.new_page()
 
-        # 原生 JS dialog（alert/confirm）自動接受
-        page.on("dialog", lambda d: d.accept())
-
-        # 啟用 trace：失敗時更好查
-        context.tracing.start(screenshots=True, snapshots=True, sources=True)
-
         try:
-            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
-            save_screenshot(page, "loaded_login_page.png")
+            print(f"前往: {LOGIN_URL}")
+            page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+            save_screenshot(page, "01_loaded.png")
 
-            presses = try_swallow_popups(page, enter_times=6)
-            save_screenshot(page, "after_popups.png")
+            # 1. 處理彈窗
+            handle_popups(page)
+            
+            # 2. 檢查 Cloudflare (並截圖)
+            check_cloudflare(page)
 
-            page.wait_for_selector(SEL_USERNAME, timeout=20_000)
+            # 3. 填寫登入資訊
+            print("填寫登入資訊...")
+            # 確保輸入框是可以操作的狀態
+            page.wait_for_selector(SEL_USERNAME, state="visible", timeout=10000)
+            
+            # 模擬人類輸入速度 (非必要，但有助於繞過某些簡單偵測)
             page.fill(SEL_USERNAME, USERNAME)
-
-            page.wait_for_selector(SEL_PASSWORD, timeout=20_000)
+            page.wait_for_timeout(300) 
             page.fill(SEL_PASSWORD, PASSWORD)
+            
+            save_screenshot(page, "02_filled.png")
 
-            cf_note = note_cloudflare_and_wait(page)
-
-            page.wait_for_selector(SEL_LOGIN_BTN, timeout=20_000)
+            # 4. 點擊登入
+            print("點擊登入...")
+            # 有時候 click 會因為 overlay 失敗，這裡用 force=True 或者 js click 會比較保險，但先試標準 click
             page.click(SEL_LOGIN_BTN)
+            
+            # 5. 驗證結果
+            # 這裡需要等待導航完成或特定元素出現
+            # 因為點擊按鈕後通常會 PostBack，我們等待網路閒置或 URL 改變
+            try:
+                # 這裡設定等待導航，如果只是 AJAX 則需要改用 wait_for_response 或 wait_for_selector
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass # 有時候 PostBack 不會觸發完整的 load event
 
-            # 目前還不知道「登入成功」的判斷條件，所以先用短暫等待 + 截圖
-            page.wait_for_timeout(3000)
-            save_screenshot(page, "after_click_login.png")
+            save_screenshot(page, "03_after_login.png")
+            
+            # 簡單判斷：如果還在登入頁且有錯誤訊息? 或是 URL 變了?
+            # 假設 URL 改變即成功 (您可以根據實際情況調整判斷邏輯)
+            if "login" not in page.url or page.locator("text='登出'").count() > 0:
+                 print("✅ 登入似乎成功 (URL 改變或發現登出按鈕)")
+            else:
+                 print("❓ 登入狀態未明，請檢查截圖 03_after_login.png")
 
-            print("✅ 完成：已執行登入流程")
-            print(f"- Enter 次數：約 {presses}")
-            print(f"- {cf_note}")
-            print("- 已輸出 artifacts/ 內的截圖供檢查")
-
-        except Exception:
-            save_screenshot(page, "error_state.png")
+        except Exception as e:
+            print(f"❌ 發生錯誤: {e}")
+            save_screenshot(page, "99_error.png")
             raise
         finally:
-            # 永遠輸出 trace（成功/失敗都保留，方便下一步調整）
+            # 匯出 Trace zip
             trace_path = ART_DIR / "trace.zip"
             context.tracing.stop(path=str(trace_path))
+            print(f"Trace 已儲存至: {trace_path}")
             browser.close()
 
 if __name__ == "__main__":
-    main()
+    run()
