@@ -21,75 +21,60 @@ def log(msg):
 
 def safe_screenshot(page, filename):
     """
-    安全的截圖函式：
-    如果截圖時剛好遇到原生 Alert，先處理掉再截圖，避免崩潰。
+    安全的截圖函式
     """
     try:
         page.get_screenshot(str(ART_DIR / filename))
     except AlertExistsError:
-        log("⚠️ 截圖時遇到原生 Alert，嘗試自動接受...")
+        log("⚠️ 截圖時遇到原生 Alert，嘗試強制處理...")
         try:
-            page.handle_alert(accept=True) # 點擊確定
+            # 直接呼叫處理方法，不檢查屬性
+            page.handle_alert(accept=True)
             time.sleep(1)
             page.get_screenshot(str(ART_DIR / filename))
         except Exception as e:
             log(f"❌ 處理 Alert 後截圖仍失敗: {e}")
 
 def run():
-    log("🚀 腳本開始執行 (Auto-Handle Alert 版)")
+    log("🚀 腳本開始執行 (Final Fix)")
     
     co = ChromiumOptions()
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-gpu')
     co.set_browser_path('/usr/bin/google-chrome')
-    # 設定較長的 timeout，以免載入太久
     co.set_timeouts(base=10, page_load=60)
 
     try:
         log("1. 啟動瀏覽器...")
         page = ChromiumPage(co)
         
-        # --- [關鍵修正 1] 開啟自動處理原生彈窗 ---
-        # 這行指令告訴瀏覽器：只要看到 Alert/Confirm，自動點「確定」(accept=True)
-        # 這會持續生效，解決 "1-3 次彈窗" 的問題
+        # [關鍵] 設定全自動處理原生彈窗
+        # 只要有 Alert 跳出，自動按確定，無需手動介入
         page.set.auto_handle_alert(accept=True)
-        log("✅ 已啟用自動 Alert 處理 (Auto-Accept)")
-        # -------------------------------------
+        log("✅ 已啟用自動 Alert 處理")
 
         log(f"2. 前往網址: {LOGIN_URL}")
         page.get(LOGIN_URL, retry=1, timeout=30)
         
         log("⏳ 等待文件載入...")
-        # 這裡可能會因為 Alert 出現而稍微卡住，但 auto_handle 應該會秒解
         page.wait.doc_loaded(timeout=15, raise_err=False)
-        
         safe_screenshot(page, "01_loaded.png")
 
-        # --- [關鍵修正 2] 混合處理 (HTML 彈窗 + 原生 Alert) ---
-        log("3. 雙重檢查彈窗 (HTML Modal)...")
-        
-        # 雖然開了 auto_handle，但如果是 HTML 做的假彈窗，還是要按 Enter
+        log("3. 處理 HTML 遮罩 (Enter Loop)...")
+        # 這裡只需要專注處理 "非原生" 的 HTML 遮罩 (因為原生的已經被上面 auto_handle 解決了)
         for i in range(5):
-            # 檢查是否還有原生 Alert 殘留 (防呆)
-            if page.alert.exists:
-                log(f"👉 [原生] 發現殘留 Alert，手動處理...")
-                page.handle_alert(accept=True)
-                time.sleep(1)
-                continue
-
             # 檢查登入框是否可見
             ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=1)
             if ele_user and ele_user.is_displayed():
                 log(f"✅ 在第 {i} 次檢查時發現登入框，準備登入。")
                 break
             
-            log(f"👉 [HTML] 第 {i+1} 次嘗試按 Enter (消除遮罩)...")
+            log(f"👉 第 {i+1} 次嘗試按 Enter (消除 HTML 遮罩)...")
             page.actions.type(Keys.ENTER)
             time.sleep(1.5)
             
             if i == 0:
                 safe_screenshot(page, "01-1_after_enter.png")
-        # -------------------------------------
 
         log("4. 尋找登入輸入框...")
         ele_user = page.ele('css:input#ContentPlaceHolder1_loginid', timeout=5)
@@ -125,10 +110,9 @@ def run():
 
     except Exception as e:
         log(f"🔥 發生錯誤: {e}")
-        # 最後再嘗試處理一次 alert 以便截圖
+        # 錯誤處理區塊也不要檢查 page.alert.exists，直接嘗試 handle
         try:
-            if page.alert.exists:
-                page.handle_alert(accept=True)
+            page.handle_alert(accept=True)
             page.get_screenshot(str(ART_DIR / "crash_dump.png"))
         except:
             pass
