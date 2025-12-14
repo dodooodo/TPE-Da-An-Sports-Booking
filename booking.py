@@ -3,7 +3,19 @@ import time
 import random
 from pathlib import Path
 from playwright.sync_api import sync_playwright, Page
-from playwright_stealth import stealth_sync  # 記得 import
+
+# --- 修正 Import 問題：加入防呆機制 ---
+# 嘗試多種路徑匯入，如果都失敗則標記為 None，稍後改用手動 Patch
+stealth_sync = None
+try:
+    from playwright_stealth import stealth_sync
+except ImportError:
+    try:
+        # 這是解決您遇到的錯誤的關鍵：直接從子模組匯入
+        from playwright_stealth.stealth import stealth_sync
+    except ImportError:
+        print("⚠️ 警告: 無法匯入 playwright_stealth，將改用手動 JS Patch 模式")
+        stealth_sync = None
 
 # --- 設定區 ---
 LOGIN_URL = "https://www.cjcf.com.tw/CG02.aspx?module=login_page&files=login"
@@ -30,38 +42,48 @@ def save_screenshot(page: Page, name: str):
         pass
 
 def random_mouse_move(page: Page, times=5):
-    """
-    模擬人類隨機移動滑鼠，這對 Cloudflare Turnstile 非常重要。
-    它會偵測滑鼠是否「瞬移」(機器人) 還是有軌跡 (人類)。
-    """
-    print("滑鼠隨機移動中 (模擬真人)...")
+    """模擬人類隨機移動滑鼠"""
+    print("滑鼠隨機移動中...")
     for _ in range(times):
         x = random.randint(100, 800)
         y = random.randint(100, 600)
-        # steps 參數讓移動有過程，而不是瞬移
         page.mouse.move(x, y, steps=random.randint(5, 15))
         page.wait_for_timeout(random.randint(100, 300))
+
+def apply_stealth(page: Page):
+    """
+    統一處理隱身邏輯：
+    1. 優先使用套件 (stealth_sync)
+    2. 若套件失敗，手動移除 navigator.webdriver 特徵
+    """
+    if stealth_sync:
+        print("🛡️ 啟用 Playwright Stealth (套件模式)")
+        stealth_sync(page)
+    else:
+        print("🛡️ 啟用 Playwright Stealth (手動 Patch 模式)")
+        # 這是最核心的反偵測腳本：移除 webdriver 屬性
+        page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+        """)
 
 def handle_popups(page: Page):
     print("檢查彈窗...")
     for i in range(3):
         try:
-            # 1. SweetAlert
             if page.locator(SEL_SWAL_CONFIRM).first.is_visible(timeout=1000):
                 print(f"[{i}] 點擊 SweetAlert...")
                 page.locator(SEL_SWAL_CONFIRM).first.click()
                 page.wait_for_timeout(500)
             
-            # 2. 隨機動動滑鼠
-            random_mouse_move(page, times=2)
+            random_mouse_move(page, times=1)
             
-            # 3. 嘗試按 Enter 消除原生遮罩
             if not page.locator(SEL_USERNAME).is_visible():
                 page.keyboard.press("Enter")
         except Exception:
             pass
         
-        # 如果登入框出來了就跳出
         if page.locator(SEL_USERNAME).is_visible():
             break
 
@@ -70,11 +92,8 @@ def run():
         raise RuntimeError("缺少帳號密碼 Secret")
 
     with sync_playwright() as p:
-        # --- 關鍵設定 ---
-        # 1. headless=False (配合 Xvfb)
-        # 2. 移除 AutomationControlled 特徵
         browser = p.chromium.launch(
-            headless=False, 
+            headless=False, # 配合 Xvfb
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -83,57 +102,48 @@ def run():
         )
 
         context = browser.new_context(
-            viewport={"width": 1920, "height": 1080}, # 配合 Xvfb 解析度
+            viewport={"width": 1920, "height": 1080},
             user_agent=USER_AGENT,
             locale="zh-TW",
             timezone_id="Asia/Taipei"
         )
         
-        # 開啟 Trace
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
         page = context.new_page()
         
-        # --- 啟用 Stealth 模式 ---
-        stealth_sync(page)
+        # --- 套用隱身設定 ---
+        apply_stealth(page)
 
         try:
             print(f"前往登入頁: {LOGIN_URL}")
-            # 用 commit 確保載入完成
             page.goto(LOGIN_URL, wait_until="commit", timeout=60000)
             
-            # Cloudflare 等待期 (Combined Dance)
-            print(f"等待 {CF_WAIT_SECONDS} 秒並進行滑鼠模擬 (繞過 Cloudflare)...")
+            print(f"等待 {CF_WAIT_SECONDS} 秒並模擬真人行為...")
             start_time = time.time()
             while time.time() - start_time < CF_WAIT_SECONDS:
                 random_mouse_move(page, times=3)
-                # 檢查是否有 Turnstile iframe，有的話嘗試 hover
-                frames = page.frames
-                for frame in frames:
-                    if "cloudflare" in frame.url or "turnstile" in frame.url:
-                        try:
-                            # 嘗試把滑鼠移到 iframe 上
+                # 簡單的 iframe 互動嘗試
+                try:
+                    for frame in page.frames:
+                        if "cloudflare" in frame.url or "turnstile" in frame.url:
                             box = frame.frame_element().bounding_box()
                             if box:
                                 cx = box['x'] + box['width'] / 2
                                 cy = box['y'] + box['height'] / 2
                                 page.mouse.move(cx, cy, steps=10)
-                        except:
-                            pass
+                except:
+                    pass
             
             save_screenshot(page, "01_after_cf_wait.png")
 
-            # 處理彈窗
             handle_popups(page)
 
-            # 檢查登入框是否出現
             print("嘗試填寫帳密...")
             page.wait_for_selector(SEL_USERNAME, state="visible", timeout=20000)
             
-            # 模擬人類輸入 (打字有間隔)
             page.click(SEL_USERNAME)
             page.keyboard.type(USERNAME, delay=random.randint(50, 150))
-            
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(300)
             
             page.click(SEL_PASSWORD)
             page.keyboard.type(PASSWORD, delay=random.randint(50, 150))
@@ -141,16 +151,13 @@ def run():
             save_screenshot(page, "02_filled.png")
 
             print("點擊登入...")
-            # 有時候用 JS click 比較不會被上方遮罩擋住
             page.click(SEL_LOGIN_BTN)
             
-            # 等待跳轉
             print("等待結果...")
             page.wait_for_timeout(5000)
             save_screenshot(page, "03_result.png")
 
-            content = page.content()
-            if "登出" in content or "login" not in page.url:
+            if "登出" in page.content() or "login" not in page.url:
                 print("✅ 登入似乎成功")
             else:
                 print("❓ 未偵測到登入成功訊號，請檢查截圖")
