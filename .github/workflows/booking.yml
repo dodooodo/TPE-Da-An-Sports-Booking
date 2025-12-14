@@ -18,19 +18,30 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip' # 啟用 pip 快取
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+
+      - name: Ensure Playwright Browsers are cached
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Playwright Browsers
+        # 只有在沒有快取時才執行安裝，大幅節省時間
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install --with-deps chromium
 
       - name: Run booking script
         env:
           BOOKING_USERNAME: ${{ secrets.BOOKING_USERNAME }}
           BOOKING_PASSWORD: ${{ secrets.BOOKING_PASSWORD }}
-          # 可選：調整等待 Cloudflare 秒數
           CF_WAIT_SECONDS: "6"
+          TZ: "Asia/Taipei" # 設定時區，讓 log 時間正確
         run: |
           python booking.py
 
@@ -42,3 +53,4 @@ jobs:
           path: |
             artifacts/**
           if-no-files-found: ignore
+          retention-days: 3 # 設定保留天數，節省空間
