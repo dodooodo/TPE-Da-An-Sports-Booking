@@ -1,0 +1,44 @@
+name: Weekly Booking Bot (Playwright)
+
+on:
+  schedule:
+    - cron: "0 1 * * 5"   # Fri 01:00 UTC = 09:00 Asia/Taipei
+  workflow_dispatch: {}
+
+jobs:
+  run-booking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run booking script
+        env:
+          BOOKING_USERNAME: ${{ secrets.BOOKING_USERNAME }}
+          BOOKING_PASSWORD: ${{ secrets.BOOKING_PASSWORD }}
+          # 可選：調整等待 Cloudflare 秒數
+          CF_WAIT_SECONDS: "6"
+        run: |
+          python booking.py
+
+      - name: Upload artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-artifacts
+          path: |
+            artifacts/**
+          if-no-files-found: ignore
